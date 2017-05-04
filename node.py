@@ -19,7 +19,6 @@ app_log.info("Configuration settings loaded")
 # load config
 version = version_conf
 
-
 def unban(ip):
     global warning_list
     global banlist
@@ -221,8 +220,6 @@ global busy
 busy = 0
 global busy_mempool
 busy_mempool = 0
-global leading_node
-leading_node = '127.0.0.1'
 
 
 # port = 2829 now defined by config
@@ -561,7 +558,6 @@ def blocknf(block_hash_delete):
 
 
 def consensus_add(peer_ip, consensus_blockheight):
-    global leading_node
     global peer_ip_list
     global consensus_blockheight_list
     global consensus_percentage
@@ -595,10 +591,6 @@ def consensus_add(peer_ip, consensus_blockheight):
         consensus_blockheight_list.count(consensus) / float(len(consensus_blockheight_list)))) * 100
     app_log.info("Current outgoing connections: {}".format(len(active_pool)))
     app_log.info("Current block consensus: {} = {}%".format(consensus,consensus_percentage))
-
-    if max(consensus_blockheight_list) == consensus_blockheight:
-        leading_node = peer_ip
-        app_log.info("Leading node is now {}".format(leading_node))
 
     return
 
@@ -660,6 +652,7 @@ def digest_block(data, sdef, peer_ip):
     global busy
 
     if busy == 0:
+        app_log.info("Digesting started")
         busy = 1
         try:
             conn = sqlite3.connect(ledger_path_conf)
@@ -771,7 +764,7 @@ def digest_block(data, sdef, peer_ip):
                 block_height_new = db_block_height + 1
                 # previous block info
 
-                if db_block_height > 20000: #remove post hf
+                if db_block_height > 60000: #remove IF post hf
                     # reject blocks older than latest block
                     if float(block_timestamp) <= float(db_timestamp_last):
                         block_valid = 0
@@ -789,6 +782,9 @@ def digest_block(data, sdef, peer_ip):
 
                 try:
                     diff = int(math.log(1e18 / timestamp_difference))
+                    if db_block_height > 60000:
+                        diff = int(math.log(1e20 / timestamp_difference))
+
                 except:
                     pass
                 finally:
@@ -961,12 +957,16 @@ def digest_block(data, sdef, peer_ip):
                             commit(conn)
 
                             # dev reward
-                            if int(block_height_new) % 100 == 0: #every 100 blocks
-                                if transaction == block_transactions[-1]: #put at the end
-                                    execute_param(c, "INSERT INTO transactions VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", (
-                                        "0", time_now, "Development Reward", genesis_conf,
-                                        reward, "0", "0", "0", "0", "0", "0", str(block_height_new)))
-                                    commit(conn)
+                            if int(block_height_new) % 10 == 0: #every 10 blocks
+                                try:
+                                    execute_param(c,("SELECT timestamp FROM transactions WHERE openfield = ?;"), (str(block_height_new),))
+                                    test_dev_reward = c.fetchone()[0]
+                                except:
+                                    if transaction == block_transactions[-1]: #put at the end
+                                        execute_param(c, "INSERT INTO transactions VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", (
+                                            "0", time_now, "Development Reward", genesis_conf,
+                                            reward, "0", "0", "0", "0", "0", "0", str(block_height_new)))
+                                        commit(conn)
                             # dev reward
 
                         app_log.info("Block {} valid and saved".format(block_height_new))
@@ -1019,9 +1019,8 @@ else:
     address = hashlib.sha224(public_key_hashed).hexdigest()  # hashed public key
     # generate key pair and an address
 
-    app_log.info("Your address: ".format(address))
-    app_log.info("Your private key: ".format(private_key_readable))
-    app_log.info("Your public key: ".format(public_key_hashed))
+    app_log.info("Your address: {}".format(address))
+    app_log.info("Your public key: {}".format(public_key_hashed))
 
     pem_file = open("privkey.der", 'a')
     pem_file.write(str(private_key_readable))
@@ -1071,17 +1070,15 @@ if verify_conf == 1:
 ### LOCAL CHECKS FINISHED ###
 app_log.info("Starting up...")
 
-
 class ThreadedTCPRequestHandler(SocketServer.BaseRequestHandler):
     def handle(self):  # server defined here
-        global leading_node
         global busy
         global banlist
         global warning_list_limit_conf
 
         peer_ip = self.request.getpeername()[0]
 
-        if threading.active_count() < thread_limit_conf:
+        if threading.active_count() < thread_limit_conf or peer_ip == "127.0.0.1":
             capacity = 1
         else:
             capacity = 0
@@ -1202,15 +1199,32 @@ class ThreadedTCPRequestHandler(SocketServer.BaseRequestHandler):
                 elif data == "blocksfnd":
                     app_log.info("Incoming: Client has the block")  # node should start sending txs in this step
 
-                    # receive theirs
-                    segments = receive(self.request, 10)
-
-                    # app_log.info("Incoming: Combined segments: " + segments)
-                    # print peer_ip
-                    # print leading_node
-                    if peer_ip == leading_node:
-                        digest_block(segments, self.request,peer_ip)
+                    if db_block_height <= 60000:
+                        #prefork
                         # receive theirs
+                        segments = receive(self.request, 10)
+
+                        # app_log.info("Incoming: Combined segments: " + segments)
+                        # print peer_ip
+                        if max(consensus_blockheight_list) == consensus_blockheight:
+                            digest_block(segments, self.request,peer_ip)
+                            # receive theirs
+                        # prefork
+                    if db_block_height > 60000:
+                        #postfork
+                        # app_log.info("Incoming: Combined segments: " + segments)
+                        # print peer_ip
+                        if max(consensus_blockheight_list) == consensus_blockheight and busy == 0:
+                            send(self.request, (str(len("blockscf"))).zfill(10))
+                            send(self.request, "blockscf")
+
+                            segments = receive(self.request, 10)
+                            digest_block(segments, self.request,peer_ip)
+                            # receive theirs
+                        else:
+                            send(self.request, (str(len("blocksrj"))).zfill(10))
+                            send(self.request, "blocksrj")
+                        #postfork
 
                     while busy == 1:
                         time.sleep(1)
@@ -1301,11 +1315,32 @@ class ThreadedTCPRequestHandler(SocketServer.BaseRequestHandler):
                                 # app_log.info("Incoming: Selected " + str(blocks_send) + " to send")
 
                                 conn.close()
-                                send(self.request, (str(len("blocksfnd"))).zfill(10))
-                                send(self.request, "blocksfnd")
 
-                                send(self.request, (str(len(str(blocks_send)))).zfill(10))
-                                send(self.request, str(blocks_send))
+                                # prefork
+                                if db_block_height <= 60000:
+                                    send(self.request, (str(len("blocksfnd"))).zfill(10))
+                                    send(self.request, "blocksfnd")
+
+                                    send(self.request, (str(len(str(blocks_send)))).zfill(10))
+                                    send(self.request, str(blocks_send))
+                                # prefork
+
+                                # postfork
+                                if db_block_height > 60000:
+                                    send(self.request, (str(len("blocksfnd"))).zfill(10))
+                                    send(self.request, "blocksfnd")
+
+                                    confirmation = receive(self.request, 10)
+
+                                    if confirmation == "blockscf":
+                                        app_log.info("Incoming: Client confirmed they want to sync from us")
+                                        send(self.request, (str(len(str(blocks_send)))).zfill(10))
+                                        send(self.request, str(blocks_send))
+                                    elif confirmation == "blocksrj":
+                                        app_log.info("Incoming: Client rejected to sync from us because we're dont have the latest block")
+                                        pass
+                                # postfork
+
                                 # send own
 
                         except:
@@ -1325,8 +1360,7 @@ class ThreadedTCPRequestHandler(SocketServer.BaseRequestHandler):
                 elif data == "blocknf":
                     block_hash_delete = receive(self.request, 10)
                     # print peer_ip
-                    # print leading_node
-                    if peer_ip == leading_node:
+                    if max(consensus_blockheight_list) == consensus_blockheight:
                         blocknf(block_hash_delete)
                         warning_list.append(peer_ip)
 
@@ -1338,11 +1372,29 @@ class ThreadedTCPRequestHandler(SocketServer.BaseRequestHandler):
                     send(self.request, "sync")
 
                 elif data == "block":  # from miner
-                    # receive theirs
+                    app_log.info("Outgoing: Received a block from miner")
+                    # receive block
                     segments = receive(self.request, 10)
                     # app_log.info("Incoming: Combined mined segments: " + segments)
-                    digest_block(segments, self.request,peer_ip)
+
+                    # check if we have the latest block
+                    conn = sqlite3.connect(ledger_path_conf)
+                    conn.text_factory = str
+                    c = conn.cursor()
+                    execute(c, ('SELECT block_height FROM transactions ORDER BY block_height DESC LIMIT 1'))
+                    db_block_height = c.fetchone()[0]
+                    conn.close()
+                    # check if we have the latest block
+
+                    if len(active_pool) < 5:
+                        app_log.info("Outgoing: Mined block ignored, insufficient connections to the network")
+                    elif int(db_block_height) > int(max(consensus_blockheight_list))-3:
+                        app_log.info("Outgoing: Processing block from miner")
+                        digest_block(segments, self.request,peer_ip)
                     # receive theirs
+                    else:
+                        app_log.info("Outgoing: Mined block was orphaned because node was not synced, we are at block {}, should be at least {}".format(db_block_height,int(max(consensus_blockheight_list))-3))
+
 
                 else:
                     raise ValueError("Unexpected error, received: " + str(data))
@@ -1367,7 +1419,6 @@ class ThreadedTCPRequestHandler(SocketServer.BaseRequestHandler):
 
 # client thread
 def worker(HOST, PORT):
-    global leading_node
     global busy
     try:
         this_client = (HOST + ":" + str(PORT))
@@ -1551,13 +1602,32 @@ def worker(HOST, PORT):
 
                             # app_log.info("Outgoing: Selected " + str(blocks_send) + " to send")
 
-                            send(s, (str(len("blocksfnd"))).zfill(10))
-                            send(s, "blocksfnd")
 
-                            # send own
-                            send(s, (str(len(str(blocks_send)))).zfill(10))
-                            send(s, str(blocks_send))
-                            # send own
+                            # prefork
+                            if int(db_block_height) <= 60000:
+                                send(s, (str(len("blocksfnd"))).zfill(10))
+                                send(s, "blocksfnd")
+
+                                send(s, (str(len(str(blocks_send)))).zfill(10))
+                                send(s, str(blocks_send))
+                            # prefork
+
+                            # postfork
+                            if int(db_block_height) > 60000:
+                                send(s, (str(len("blocksfnd"))).zfill(10))
+                                send(s, "blocksfnd")
+
+                                confirmation = receive(s, 10)
+
+                                if confirmation == "blockscf":
+                                    app_log.info("Outgoing: Client confirmed they want to sync from us")
+                                    send(s, (str(len(str(blocks_send)))).zfill(10))
+                                    send(s, str(blocks_send))
+
+                                elif confirmation == "blocksrj":
+                                    app_log.info("Outgoing: Client rejected to sync from us because we're dont have the latest block")
+                                    pass
+                            # postfork
                     except:
                         app_log.info("Outgoing: Block not found")
                         send(s, (str(len("blocknf"))).zfill(10))
@@ -1569,8 +1639,7 @@ def worker(HOST, PORT):
             elif data == "blocknf":
                 block_hash_delete = receive(s, 10)
                 # print peer_ip
-                # print leading_node
-                if peer_ip == leading_node:
+                if max(consensus_blockheight_list) == consensus_blockheight:
                     blocknf(block_hash_delete)
 
                 while busy == 1:
@@ -1580,19 +1649,35 @@ def worker(HOST, PORT):
 
             elif data == "blocksfnd":
                 app_log.info("Outgoing: Node has the block")  # node should start sending txs in this step
+                # prefork
+                if int(db_block_height) <= 60000:
+                    # receive theirs
+                    segments = receive(s, 10)
 
-                # receive theirs
-                segments = receive(s, 10)
+                    # app_log.info("Incoming: Combined segments: " + segments)
+                    # print peer_ip
+                    if max(consensus_blockheight_list) == consensus_blockheight:
+                        digest_block(segments, s, peer_ip)
+                        # receive theirs
+                # prefork
 
-                # app_log.info("Incoming: Combined segments: " + segments)
-                # print peer_ip
-                # print leading_node
-                if peer_ip == leading_node:
-                    digest_block(segments,s,peer_ip)
-                # receive theirs
 
-                # digest_block(data) goddamn bug
-                # digest_block() #temporary
+                # postfork
+                if int(db_block_height) > 60000:
+                    # app_log.info("Incoming: Combined segments: " + segments)
+                    # print peer_ip
+                    if max(consensus_blockheight_list) == consensus_blockheight and busy == 0:
+                        send(s, (str(len("blockscf"))).zfill(10))
+                        send(s, "blockscf")
+
+                        segments = receive(s, 10)
+                        digest_block(segments, s, peer_ip)
+                        # receive theirs
+                    else:
+                        send(s, (str(len("blocksrj"))).zfill(10))
+                        send(s, "blocksrj")
+                # postfork
+
 
                 while busy == 1:
                     time.sleep(1)

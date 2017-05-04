@@ -514,6 +514,8 @@ def refresh():
 
     try:
         diff = (math.log(1e18/timestamp_difference))
+        if db_block_height > 60000:
+            diff = (math.log(1e20 / timestamp_difference))
     except:
         pass
     finally:
@@ -534,7 +536,7 @@ def refresh():
         sync_msg = "{}m behind".format((int(last_block_ago/60)))
         sync_msg_label.config(fg='red')
     else:
-        sync_msg = "Up to date"
+        sync_msg = "Up to date\nLast block: {}s ago".format((int(last_block_ago)))
         sync_msg_label.config(fg='green')
 
 #network status

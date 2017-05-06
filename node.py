@@ -9,15 +9,15 @@ from Crypto.Hash import SHA
 from Crypto.PublicKey import RSA
 from Crypto.Signature import PKCS1_v1_5
 
-app_log = log.log("node.log")
-
 # load config
 global warning_list_limit_conf
-(port, genesis_conf, verify_conf, version_conf, thread_limit_conf, rebuild_db_conf, debug_conf, purge_conf, pause_conf, ledger_path_conf, hyperblocks_conf, warning_list_limit_conf, tor_conf) = options.read()
-
-app_log.info("Configuration settings loaded")
+(port, genesis_conf, verify_conf, version_conf, thread_limit_conf, rebuild_db_conf, debug_conf, purge_conf, pause_conf, ledger_path_conf, hyperblocks_conf, warning_list_limit_conf, tor_conf, debug_level_conf) = options.read()
 # load config
+
+app_log = log.log("node.log",debug_level_conf)
 version = version_conf
+
+app_log.warning("Configuration settings loaded")
 
 def unban(ip):
     global warning_list
@@ -42,7 +42,7 @@ def warning(sdef, ip):
 
 def ledger_convert():
     try:
-        app_log.info("Converting ledger to Hyperblocks")
+        app_log.warning("Converting ledger to Hyperblocks")
         depth = 10000
 
         shutil.copy(ledger_path_conf, ledger_path_conf + '.hyper')
@@ -180,7 +180,10 @@ def receive(sdef, slen):
         data = int(sdef.recv(slen))  # receive length
         # print "To receive: "+str(data)
     else:
-        raise RuntimeError("Socket timeout")
+        if debug_conf == 1:
+            raise RuntimeError("Socket timeout")
+        else:
+            return
 
     chunks = []
     bytes_recd = 0
@@ -193,7 +196,10 @@ def receive(sdef, slen):
             chunks.append(chunk)
             bytes_recd = bytes_recd + len(chunk)
         else:
-            raise RuntimeError("Socket timeout")
+            if debug_conf == 1:
+                raise RuntimeError("Socket timeout")
+            else:
+                return
     segments = b''.join(chunks)
     # print "Received segments: "+str(segments)
 
@@ -211,7 +217,7 @@ consensus_blockheight_list = []
 global tried
 tried = []
 global consensus_percentage
-consensus_percentage = 100
+consensus_percentage = ""
 global warning_list
 warning_list = []
 global banlist
@@ -220,6 +226,8 @@ global busy
 busy = 0
 global busy_mempool
 busy_mempool = 0
+global consensus
+consensus = ""
 
 
 # port = 2829 now defined by config
@@ -432,7 +440,7 @@ def purge_old_peers():
 
             try:
                 s = socks.socksocket()
-                s.settimeout(0.1)
+                s.settimeout(0.3)
                 if tor_conf == 1:
                     s.setproxy(socks.PROXY_TYPE_SOCKS5, "127.0.0.1", 9050)
                 # s.setblocking(0)
@@ -509,7 +517,7 @@ def verify():
             # verify blockchain
 
 
-def blocknf(block_hash_delete):
+def blocknf(block_hash_delete, peer_ip):
     global busy
     if busy == 0:
         busy = 1
@@ -531,13 +539,13 @@ def blocknf(block_hash_delete):
             #db_keep = results[10]
 
             if db_block_height < 2:
-                app_log.info("Outgoing: Will not roll back this block")
+                app_log.info("Will not roll back this block")
                 conn.close()
 
             elif (db_block_hash != block_hash_delete):
                 # print db_block_hash
                 # print block_hash_delete
-                app_log.info("Outgoing: We moved away from the block to rollback, skipping")
+                app_log.info("We moved away from the block to rollback, skipping")
                 conn.close()
 
             else:
@@ -546,9 +554,7 @@ def blocknf(block_hash_delete):
                 commit(conn)
                 conn.close()
 
-                app_log.info("Outgoing: Node didn't find the block, deleted latest entry")  # PRONE TO ATTACK
-
-
+                app_log.warning("Node {} didn't find block {}, rolled back".format(peer_ip,db_block_height))  # PRONE TO ATTACK
 
         except:
             pass
@@ -561,6 +567,7 @@ def consensus_add(peer_ip, consensus_blockheight):
     global peer_ip_list
     global consensus_blockheight_list
     global consensus_percentage
+    global consensus
 
     if peer_ip not in peer_ip_list:
         app_log.info("Adding {} to consensus peer list".format(peer_ip))
@@ -582,15 +589,13 @@ def consensus_add(peer_ip, consensus_blockheight):
             peer_ip_list.append(peer_ip)
             consensus_blockheight_list.append(int(consensus_blockheight))
 
-    app_log.info("Consensus IP list: {}".format(peer_ip_list))
-    app_log.info("Consensus opinion list: {}".format(consensus_blockheight_list))
-
     consensus = most_common(consensus_blockheight_list)
 
     consensus_percentage = (float(
         consensus_blockheight_list.count(consensus) / float(len(consensus_blockheight_list)))) * 100
-    app_log.info("Current outgoing connections: {}".format(len(active_pool)))
-    app_log.info("Current block consensus: {} = {}%".format(consensus,consensus_percentage))
+
+    #app_log.info("Current outgoing connections: {}".format(len(active_pool)))
+    #app_log.info("Current block consensus: {} = {}%".format(consensus,consensus_percentage))
 
     return
 
@@ -617,21 +622,19 @@ def manager():
             peer_tuples = re.findall("'([\d\.]+)', '([\d]+)'", peers)
             # app_log.info(peer_tuples)
 
-            threads_count = threading.active_count()
-            threads_limit = thread_limit_conf
-
             for tuple in peer_tuples:
                 HOST = tuple[0]
                 # app_log.info(HOST)
                 PORT = int(tuple[1])
                 # app_log.info(PORT)
 
-                if threads_count <= threads_limit and str(HOST + ":" + str(PORT)) not in tried and str(
+                if threading.active_count() < thread_limit_conf and str(HOST + ":" + str(PORT)) not in tried and str(
                                         HOST + ":" + str(PORT)) not in active_pool and str(HOST) not in banlist:
                     app_log.info("Will attempt to connect to {}:{}".format(HOST,PORT))
                     tried.append(HOST + ":" + str(PORT))
                     t = threading.Thread(target=worker, args=(HOST, PORT))  # threaded connectivity to nodes here
                     app_log.info("---Starting a client thread " + str(threading.currentThread()) + "---")
+                    t.daemon = True
                     t.start()
 
                     # client thread handling
@@ -639,13 +642,17 @@ def manager():
             app_log.info("Only {} connections active, resetting the try list".format(len(active_pool)))
             del tried[:]
 
-        app_log.info("Connection manager: Threads at {} / {}".format(threads_count,threads_limit))
-        app_log.info("Tried: {}".format(tried))
-        app_log.info("Current active pool: {}".format(active_pool))
-        app_log.info("Current connections: {}".format(len(active_pool)))
+        app_log.info("Connection manager: Threads at {} / {}".format(threading.active_count(),thread_limit_conf))
+        app_log.info("Connection manager: Tried: {}".format(tried))
+        app_log.info("Connection manager: Current active pool: {}".format(active_pool))
+        app_log.warning("Connection manager: Current connections: {}".format(len(active_pool)))
+        if consensus:  # once the consensus is filled
+            app_log.warning("Connection manager: Consensus: {} = {}%".format(consensus, consensus_percentage))
+            app_log.info("Connection manager: Consensus IP list: {}".format(peer_ip_list))
+            app_log.info("Connection manager: Consensus opinion list: {}".format(consensus_blockheight_list))
 
         # app_log.info(threading.enumerate() all threads)
-        time.sleep(int(pause_conf))
+        time.sleep(int(pause_conf)*10)
 
 
 def digest_block(data, sdef, peer_ip):
@@ -764,12 +771,11 @@ def digest_block(data, sdef, peer_ip):
                 block_height_new = db_block_height + 1
                 # previous block info
 
-                if db_block_height > 60000: #remove IF post hf
-                    # reject blocks older than latest block
-                    if float(block_timestamp) <= float(db_timestamp_last):
-                        block_valid = 0
-                        error_msg = "Block is older than the previous one, will be rejected"
-                    # reject blocks older than latest block
+                # reject blocks older than latest block
+                if float(block_timestamp) <= float(db_timestamp_last):
+                    block_valid = 0
+                    error_msg = "Block is older than the previous one, will be rejected"
+                # reject blocks older than latest block
 
                 # calculate difficulty
                 execute_param(c, ("SELECT avg(timestamp) FROM transactions WHERE block_height >= ? and reward != 0;"),
@@ -781,19 +787,33 @@ def digest_block(data, sdef, peer_ip):
                 # print timestamp_difference
 
                 try:
-                    diff = int(math.log(1e18 / timestamp_difference))
-                    if db_block_height > 60000:
-                        diff = int(math.log(1e20 / timestamp_difference))
-
+                    diff = int(math.log(1e20 / timestamp_difference))
                 except:
                     pass
                 finally:
                     if db_block_height < 50:
-                        diff = 33
+                        diff = 37
                     # if diff < 4:
                     #    diff = 4
 
+                # retarget
+                execute_param(c, ("SELECT block_height FROM transactions WHERE CAST(timestamp AS INTEGER) > ? AND reward != 0"), (db_timestamp_last-600,))
+                blocks_per_minute = len(c.fetchall())/10
+
+                if blocks_per_minute > 1: # if more blocks than 1 per minute
+                    diff = diff + blocks_per_minute
+
+                #drop diff per minute if over target
+                time_drop = time.time()
+                if time_drop > db_timestamp_last + 180: #start dropping after 3 minutes
+                    diff = diff - (time_drop - db_timestamp_last)/60 #drop 1 diff per minute
+                # drop diff per minute if over target
+                if diff < 35:
+                    diff = 35
+                # retarget
+
                 app_log.info("Calculated difficulty: {}".format(diff))
+                diff = int(diff)
                 # calculate difficulty
 
                 # match difficulty
@@ -815,7 +835,8 @@ def digest_block(data, sdef, peer_ip):
                 fees_block = []
 
                 if block_valid == 0:
-                    app_log.info("Check 1: A part of the block is invalid, rejected: {}".format(error_msg))
+                    app_log.warning("Check 1: A part of the block is invalid, rejected: {}".format(error_msg))
+                    error_msg = ""
                     app_log.info("Check 1: Complete rejected block: {}".format(data))
                     warning(sdef, peer_ip)
 
@@ -842,6 +863,9 @@ def digest_block(data, sdef, peer_ip):
                         # app_log.info("Digest: Received address: " + str(db_address))
 
                         # include the new block
+
+                        #if float(db_amount) > 0: todo: only check balances if user is spending
+
                         block_credit = 0
                         block_debit = 0
 
@@ -885,6 +909,7 @@ def digest_block(data, sdef, peer_ip):
                         # app_log.info("Digest: Projected transction address balance: " + str(balance))
 
                         db_block_50 = int(db_block_height) - 50
+
                         try:
                             execute_param(c, ("SELECT timestamp FROM transactions WHERE block_height = ?;"),
                                           (str(db_block_50),))
@@ -942,6 +967,7 @@ def digest_block(data, sdef, peer_ip):
                     # whole block validation
                     if block_valid == 0:
                         app_log.info("Check 2: A part of the block is invalid, rejected: {}".format(error_msg))
+                        error_msg = ""
                         app_log.info("Check 2: Complete rejected block: {}".format(data))
                         warning(sdef, peer_ip)
                     if block_valid == 1:
@@ -969,12 +995,12 @@ def digest_block(data, sdef, peer_ip):
                                         commit(conn)
                             # dev reward
 
-                        app_log.info("Block {} valid and saved".format(block_height_new))
+                        app_log.warning("Block {} valid and saved".format(block_height_new))
+
                         del block_transactions[:]
                         unban(peer_ip)
 
-
-                    # whole block validation
+                        # whole block validation
         except Exception, e:
             app_log.info(e)
 
@@ -1000,14 +1026,14 @@ def db_maintenance():
     conn = sqlite3.connect("mempool.db")
     execute(conn, "VACUUM")
     conn.close()
-    app_log.info("Database maintenance finished")
+    app_log.warning("Database maintenance finished")
 
 
 # key maintenance
 if os.path.isfile("privkey.der") is True:
-    app_log.info("privkey.der found")
+    app_log.warning("privkey.der found")
 elif os.path.isfile("privkey_encrypted.der") is True:
-    app_log.info("privkey_encrypted.der found")
+    app_log.warning("privkey_encrypted.der found")
 else:
     # generate key pair and an address
     random_generator = Random.new().read
@@ -1041,7 +1067,7 @@ public_key_readable = open('pubkey.der').read()
 public_key_hashed = base64.b64encode(public_key_readable)
 address = hashlib.sha224(public_key_readable).hexdigest()
 
-app_log.info("Local address: {}".format(address))
+app_log.warning("Local address: {}".format(address))
 
 if hyperblocks_conf == 1:
     ledger_convert()
@@ -1058,7 +1084,7 @@ if not os.path.exists('mempool.db'):
     app_log.info("Created mempool file")
     # create empty mempool
 else:
-    app_log.info("Mempool exists")
+    app_log.warning("Mempool exists")
 
 if rebuild_db_conf == 1:
     db_maintenance()
@@ -1068,7 +1094,7 @@ if verify_conf == 1:
     verify()
 
 ### LOCAL CHECKS FINISHED ###
-app_log.info("Starting up...")
+app_log.warning("Starting up...")
 
 class ThreadedTCPRequestHandler(SocketServer.BaseRequestHandler):
     def handle(self):  # server defined here
@@ -1199,32 +1225,18 @@ class ThreadedTCPRequestHandler(SocketServer.BaseRequestHandler):
                 elif data == "blocksfnd":
                     app_log.info("Incoming: Client has the block")  # node should start sending txs in this step
 
-                    if db_block_height <= 60000:
-                        #prefork
-                        # receive theirs
+                    # app_log.info("Incoming: Combined segments: " + segments)
+                    # print peer_ip
+                    if max(consensus_blockheight_list) == consensus_blockheight and busy == 0:
+                        send(self.request, (str(len("blockscf"))).zfill(10))
+                        send(self.request, "blockscf")
+
                         segments = receive(self.request, 10)
-
-                        # app_log.info("Incoming: Combined segments: " + segments)
-                        # print peer_ip
-                        if max(consensus_blockheight_list) == consensus_blockheight:
-                            digest_block(segments, self.request,peer_ip)
-                            # receive theirs
-                        # prefork
-                    if db_block_height > 60000:
-                        #postfork
-                        # app_log.info("Incoming: Combined segments: " + segments)
-                        # print peer_ip
-                        if max(consensus_blockheight_list) == consensus_blockheight and busy == 0:
-                            send(self.request, (str(len("blockscf"))).zfill(10))
-                            send(self.request, "blockscf")
-
-                            segments = receive(self.request, 10)
-                            digest_block(segments, self.request,peer_ip)
-                            # receive theirs
-                        else:
-                            send(self.request, (str(len("blocksrj"))).zfill(10))
-                            send(self.request, "blocksrj")
-                        #postfork
+                        digest_block(segments, self.request,peer_ip)
+                        # receive theirs
+                    else:
+                        send(self.request, (str(len("blocksrj"))).zfill(10))
+                        send(self.request, "blocksrj")
 
                     while busy == 1:
                         time.sleep(1)
@@ -1316,30 +1328,18 @@ class ThreadedTCPRequestHandler(SocketServer.BaseRequestHandler):
 
                                 conn.close()
 
-                                # prefork
-                                if db_block_height <= 60000:
-                                    send(self.request, (str(len("blocksfnd"))).zfill(10))
-                                    send(self.request, "blocksfnd")
+                                send(self.request, (str(len("blocksfnd"))).zfill(10))
+                                send(self.request, "blocksfnd")
 
+                                confirmation = receive(self.request, 10)
+
+                                if confirmation == "blockscf":
+                                    app_log.info("Incoming: Client confirmed they want to sync from us")
                                     send(self.request, (str(len(str(blocks_send)))).zfill(10))
                                     send(self.request, str(blocks_send))
-                                # prefork
-
-                                # postfork
-                                if db_block_height > 60000:
-                                    send(self.request, (str(len("blocksfnd"))).zfill(10))
-                                    send(self.request, "blocksfnd")
-
-                                    confirmation = receive(self.request, 10)
-
-                                    if confirmation == "blockscf":
-                                        app_log.info("Incoming: Client confirmed they want to sync from us")
-                                        send(self.request, (str(len(str(blocks_send)))).zfill(10))
-                                        send(self.request, str(blocks_send))
-                                    elif confirmation == "blocksrj":
-                                        app_log.info("Incoming: Client rejected to sync from us because we're dont have the latest block")
-                                        pass
-                                # postfork
+                                elif confirmation == "blocksrj":
+                                    app_log.info("Incoming: Client rejected to sync from us because we're dont have the latest block")
+                                    pass
 
                                 # send own
 
@@ -1361,7 +1361,7 @@ class ThreadedTCPRequestHandler(SocketServer.BaseRequestHandler):
                     block_hash_delete = receive(self.request, 10)
                     # print peer_ip
                     if max(consensus_blockheight_list) == consensus_blockheight:
-                        blocknf(block_hash_delete)
+                        blocknf(block_hash_delete,peer_ip)
                         warning_list.append(peer_ip)
 
                     while busy == 1:
@@ -1394,7 +1394,6 @@ class ThreadedTCPRequestHandler(SocketServer.BaseRequestHandler):
                     # receive theirs
                     else:
                         app_log.info("Outgoing: Mined block was orphaned because node was not synced, we are at block {}, should be at least {}".format(db_block_height,int(max(consensus_blockheight_list))-3))
-
 
                 else:
                     raise ValueError("Unexpected error, received: " + str(data))
@@ -1603,31 +1602,20 @@ def worker(HOST, PORT):
                             # app_log.info("Outgoing: Selected " + str(blocks_send) + " to send")
 
 
-                            # prefork
-                            if int(db_block_height) <= 60000:
-                                send(s, (str(len("blocksfnd"))).zfill(10))
-                                send(s, "blocksfnd")
+                            send(s, (str(len("blocksfnd"))).zfill(10))
+                            send(s, "blocksfnd")
 
+                            confirmation = receive(s, 10)
+
+                            if confirmation == "blockscf":
+                                app_log.info("Outgoing: Client confirmed they want to sync from us")
                                 send(s, (str(len(str(blocks_send)))).zfill(10))
                                 send(s, str(blocks_send))
-                            # prefork
 
-                            # postfork
-                            if int(db_block_height) > 60000:
-                                send(s, (str(len("blocksfnd"))).zfill(10))
-                                send(s, "blocksfnd")
+                            elif confirmation == "blocksrj":
+                                app_log.info("Outgoing: Client rejected to sync from us because we're dont have the latest block")
+                                pass
 
-                                confirmation = receive(s, 10)
-
-                                if confirmation == "blockscf":
-                                    app_log.info("Outgoing: Client confirmed they want to sync from us")
-                                    send(s, (str(len(str(blocks_send)))).zfill(10))
-                                    send(s, str(blocks_send))
-
-                                elif confirmation == "blocksrj":
-                                    app_log.info("Outgoing: Client rejected to sync from us because we're dont have the latest block")
-                                    pass
-                            # postfork
                     except:
                         app_log.info("Outgoing: Block not found")
                         send(s, (str(len("blocknf"))).zfill(10))
@@ -1640,7 +1628,7 @@ def worker(HOST, PORT):
                 block_hash_delete = receive(s, 10)
                 # print peer_ip
                 if max(consensus_blockheight_list) == consensus_blockheight:
-                    blocknf(block_hash_delete)
+                    blocknf(block_hash_delete,peer_ip)
 
                 while busy == 1:
                     time.sleep(1)
@@ -1649,35 +1637,20 @@ def worker(HOST, PORT):
 
             elif data == "blocksfnd":
                 app_log.info("Outgoing: Node has the block")  # node should start sending txs in this step
-                # prefork
-                if int(db_block_height) <= 60000:
-                    # receive theirs
+
+
+                # app_log.info("Incoming: Combined segments: " + segments)
+                # print peer_ip
+                if max(consensus_blockheight_list) == consensus_blockheight and busy == 0:
+                    send(s, (str(len("blockscf"))).zfill(10))
+                    send(s, "blockscf")
+
                     segments = receive(s, 10)
-
-                    # app_log.info("Incoming: Combined segments: " + segments)
-                    # print peer_ip
-                    if max(consensus_blockheight_list) == consensus_blockheight:
-                        digest_block(segments, s, peer_ip)
-                        # receive theirs
-                # prefork
-
-
-                # postfork
-                if int(db_block_height) > 60000:
-                    # app_log.info("Incoming: Combined segments: " + segments)
-                    # print peer_ip
-                    if max(consensus_blockheight_list) == consensus_blockheight and busy == 0:
-                        send(s, (str(len("blockscf"))).zfill(10))
-                        send(s, "blockscf")
-
-                        segments = receive(s, 10)
-                        digest_block(segments, s, peer_ip)
-                        # receive theirs
-                    else:
-                        send(s, (str(len("blocksrj"))).zfill(10))
-                        send(s, "blocksrj")
-                # postfork
-
+                    digest_block(segments, s, peer_ip)
+                    # receive theirs
+                else:
+                    send(s, (str(len("blocksrj"))).zfill(10))
+                    send(s, "blocksrj")
 
                 while busy == 1:
                     time.sleep(1)
@@ -1773,13 +1746,14 @@ if __name__ == "__main__":
 
             server_thread.daemon = True
             server_thread.start()
-            app_log.info("Server loop running in thread: {}".format(server_thread.name))
+            app_log.warning("Server loop running in thread: {}".format(server_thread.name))
         else:
-            app_log.info("Not starting a local server to conceal identity on Tor network")
+            app_log.warning("Not starting a local server to conceal identity on Tor network")
 
         # start connection manager
         t_manager = threading.Thread(target=manager())
-        app_log.info("Starting connection manager")
+        app_log.warning("Starting connection manager")
+        t_manager.daemon = True
         t_manager.start()
         # start connection manager
 

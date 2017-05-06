@@ -20,6 +20,8 @@ for line in lines:
         tor_conf = int(line.strip('tor='))
     if "miner_sync=" in line:
         sync_conf = int(line.strip('miner_sync='))
+    if "debug_level=" in line:
+        debug_level_conf = line.strip('debug_level=')
 # load config
 
 def check_uptodate(interval, app_log):
@@ -35,7 +37,7 @@ def check_uptodate(interval, app_log):
         last_block_ago = float(time_now) - float(timestamp_last_block)
 
         if last_block_ago > interval:
-            app_log.info("Local blockchain is {} minutes behind ({} seconds), waiting for sync to complete".format(int(last_block_ago) / 60,last_block_ago))
+            app_log.warning("Local blockchain is {} minutes behind ({} seconds), waiting for sync to complete".format(int(last_block_ago) / 60,last_block_ago))
             time.sleep(5)
         else:
             break
@@ -59,7 +61,7 @@ def execute(cursor, what, app_log):
             cursor.execute(what)
             passed = 1
         except Exception, e:
-            app_log.info("Retrying database execute due to {}".format(e))
+            app_log.warning("Retrying database execute due to {}".format(e))
             time.sleep(0.1)
             pass
             # secure execute for slow nodes
@@ -75,7 +77,7 @@ def execute_param(cursor, what, param, app_log):
             cursor.execute(what, param)
             passed = 1
         except Exception, e:
-            app_log.info("Retrying database execute due to {}".format(e))
+            app_log.warning("Retrying database execute due to {}".format(e))
             time.sleep(0.1)
             pass
             # secure execute for slow nodes
@@ -85,7 +87,7 @@ def miner(q,privatekey_readable, public_key_hashed, address):
     from Crypto.PublicKey import RSA
     Random.atfork()
     key = RSA.importKey(privatekey_readable)
-    app_log = log.log("miner_"+q+".log")
+    app_log = log.log("miner_"+q+".log",debug_level_conf)
     rndfile = Random.new()
     tries = 0
 
@@ -110,23 +112,37 @@ def miner(q,privatekey_readable, public_key_hashed, address):
                 execute_param(c, ("SELECT avg(timestamp) FROM transactions where block_height >= ? and reward != 0;"),(str(db_block_height - 30),), app_log)
                 timestamp_avg = c.fetchall()[0][0]  # select the reward block
                 #print timestamp_avg
-                conn.close()
 
                 try:
                     timestamp_difference = timestamp_last_block - timestamp_avg
-                    diff = float(math.log(1e18 / timestamp_difference))
-                    if db_block_height > 60000:
-                        diff = float(math.log(1e20 / timestamp_difference))
+
+                    diff = float(math.log(1e20 / timestamp_difference))
                 except:
                     pass
                 finally:
                     if db_block_height < 50:
-                        diff = 33
+                        diff = 37
                     #if diff < 4:
                     #    diff = 4
                     # calculate difficulty
 
-                app_log.info("Mining, {} cycles passed in thread {}, difficulty: {}".format(tries,q,diff))
+                # retarget
+                execute_param(c, ("SELECT block_height FROM transactions WHERE CAST(timestamp AS INTEGER) > ? AND reward != 0"), (timestamp_last_block-600,), app_log)
+                blocks_per_minute = len(c.fetchall())/10
+
+                if blocks_per_minute > 1: # if more blocks than 1 per minute
+                    diff = diff + blocks_per_minute
+
+                #drop diff per minute if over target
+                time_drop = time.time()
+                if time_drop > timestamp_last_block + 180: #start dropping after 3 minutes
+                    diff = diff - (time_drop - timestamp_last_block)/60 #drop 1 diff per minute
+                # drop diff per minute if over target
+                if diff < 35:
+                    diff = 35
+                # retarget
+
+                app_log.warning("Mining, {} cycles passed in thread {}, difficulty: {}, {} blocks per minute".format(tries,q,diff,blocks_per_minute))
                 diff = int(diff)
 
                 # serialize txs
@@ -172,7 +188,7 @@ def miner(q,privatekey_readable, public_key_hashed, address):
 
             if mining_condition in mining_hash:
 
-                app_log.info("Thread {} found a good block hash in {} cycles".format(q,tries))
+                app_log.warning("Thread {} found a good block hash in {} cycles".format(q,tries))
                 tries = 0
 
                 #submit mined block to node
@@ -185,9 +201,9 @@ def miner(q,privatekey_readable, public_key_hashed, address):
                     try:
                         s = socks.socksocket()
                         s.connect((mining_ip_conf, int(port)))  # connect to local node
-                        app_log.info("Connected")
+                        app_log.warning("Connected")
 
-                        app_log.info("Miner: Proceeding to submit mined block")
+                        app_log.warning("Miner: Proceeding to submit mined block")
 
                         send(s, (str(len("block"))).zfill(10))
                         send(s, "block")
@@ -195,11 +211,11 @@ def miner(q,privatekey_readable, public_key_hashed, address):
                         send(s, str(block_send))
 
                         submitted = 1
-                        app_log.info("Miner: Block submitted")
+                        app_log.warning("Miner: Block submitted")
 
                     except Exception, e:
                         print e
-                        app_log.info("Miner: Please start your node for the block to be submitted or adjust mining ip in settings.")
+                        app_log.warning("Miner: Please start your node for the block to be submitted or adjust mining ip in settings.")
                         time.sleep(1)
 
                 #remove sent from mempool
@@ -209,7 +225,7 @@ def miner(q,privatekey_readable, public_key_hashed, address):
                 m = mempool.cursor()
                 for x in removal_signature:
                     execute_param(m,("DELETE FROM transactions WHERE signature =?;"),(x,), app_log)
-                    app_log.info("Removed a transaction with the following signature from mempool: {}".format(x))
+                    app_log.warning("Removed a transaction with the following signature from mempool: {}".format(x))
                 mempool.commit()
                 mempool.close()
 
@@ -226,7 +242,7 @@ def miner(q,privatekey_readable, public_key_hashed, address):
 if __name__ == '__main__':
     freeze_support()  # must be this line, dont move ahead
 
-    app_log = log.log("miner.log")
+    app_log = log.log("miner.log",debug_level_conf)
     (key, private_key_readable, public_key_readable, public_key_hashed, address) = keys.read()
 
     if not os.path.exists('mempool.db'):
@@ -237,10 +253,10 @@ if __name__ == '__main__':
         execute(m,("CREATE TABLE IF NOT EXISTS transactions (timestamp, address, recipient, amount, signature, public_key, openfield)"), app_log)
         mempool.commit()
         mempool.close()
-        app_log.info("Core: Created mempool file")
+        app_log.warning("Core: Created mempool file")
         # create empty mempool
     else:
-        app_log.info("Mempool exists")
+        app_log.warning("Mempool exists")
 
     # verify connection
     connected = 0
@@ -250,12 +266,12 @@ if __name__ == '__main__':
             if tor_conf == 1:
                 s.setproxy(socks.PROXY_TYPE_SOCKS5, "127.0.0.1", 9050)
             s.connect((mining_ip_conf, int(port)))
-            app_log.info("Connected")
+            app_log.warning("Connected")
             connected = 1
             s.close()
         except Exception, e:
             print e
-            app_log.info(
+            app_log.warning(
                 "Miner: Please start your node for the block to be submitted or adjust mining ip in settings.")
             time.sleep(1)
     # verify connection

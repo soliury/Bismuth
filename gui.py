@@ -12,7 +12,14 @@ global key
 global encrypted
 global unlocked
 
-app_log = log.log("gui.log")
+# load config
+lines = [line.rstrip('\n') for line in open('config.txt')]
+for line in lines:
+    if "debug_level=" in line:
+        debug_level_conf = line.strip('debug_level=')
+# load config
+
+app_log = log.log("gui.log",debug_level_conf)
 
 root = Tk()
 root.wm_title("Bismuth")
@@ -177,7 +184,7 @@ def send(amount_input, recipient_input, keep_input, openfield_input):
         done = Button(top5, text="Cancel", command=top5.destroy)
         done.grid(row=1, column=0, sticky=W + E, padx=15, pady=(5, 5))
 
-    app_log.info("Received tx command")
+    app_log.warning("Received tx command")
 
     try:
         float(amount_input)
@@ -199,7 +206,7 @@ def send(amount_input, recipient_input, keep_input, openfield_input):
         c.execute("SELECT address FROM transactions WHERE openfield = ? ORDER BY block_height ASC, timestamp ASC LIMIT 1;",("alias="+recipient_input,)) #asc for first entry
         recipient_input = c.fetchone()[0]
         conn.close()
-        app_log.info("Fetched the following alias recipient: {}".format(recipient_input))
+        app_log.warning("Fetched the following alias recipient: {}".format(recipient_input))
 
     # alias check
 
@@ -211,10 +218,10 @@ def send(amount_input, recipient_input, keep_input, openfield_input):
         done.grid(row=1, column=0, sticky=W + E, padx=15, pady=(5, 5))
     else:
 
-        app_log.info("Amount: {}".format(amount_input))
-        app_log.info("Recipient: {}".format(recipient_input))
-        app_log.info("Keep Forever: {}".format(keep_input))
-        app_log.info("OpenField Data: {}".format(openfield_input))
+        app_log.warning("Amount: {}".format(amount_input))
+        app_log.warning("Recipient: {}".format(recipient_input))
+        app_log.warning("Keep Forever: {}".format(keep_input))
+        app_log.warning("OpenField Data: {}".format(openfield_input))
 
         timestamp = '%.2f' % time.time()
         transaction = (timestamp,address,recipient_input, '%.8f' % float(amount_input),keep_input,openfield_input) #this is signed
@@ -224,18 +231,18 @@ def send(amount_input, recipient_input, keep_input, openfield_input):
         signer = PKCS1_v1_5.new(key)
         signature = signer.sign(h)
         signature_enc = base64.b64encode(signature)
-        app_log.info("Client: Encoded Signature: {}".format(signature_enc))
+        app_log.warning("Client: Encoded Signature: {}".format(signature_enc))
 
         verifier = PKCS1_v1_5.new(key)
         if verifier.verify(h, signature) == True:
             if float(amount_input) < 0:
-                app_log.info("Client: Signature OK, but cannot use negative amounts")
+                app_log.warning("Client: Signature OK, but cannot use negative amounts")
 
             elif (float(amount_input) > float(balance)):
-                app_log.info("Mempool: Sending more than owned")
+                app_log.warning("Mempool: Sending more than owned")
 
             else:
-                app_log.info("Client: The signature is valid, proceeding to save transaction, signature, new txhash and the public key to mempool")
+                app_log.warning("Client: The signature is valid, proceeding to save transaction, signature, new txhash and the public key to mempool")
 
                 mempool = sqlite3.connect('mempool.db')
                 mempool.text_factory = str
@@ -244,15 +251,15 @@ def send(amount_input, recipient_input, keep_input, openfield_input):
                 m.execute("INSERT INTO transactions VALUES (?,?,?,?,?,?,?,?)",(timestamp, address, recipient_input, '%.8f' % float(amount_input),signature_enc, public_key_hashed, keep_input, openfield_input))
                 mempool.commit()  # Save (commit) the changes
                 mempool.close()
-                app_log.info("Client: Mempool updated with a received transaction")
+                app_log.warning("Client: Mempool updated with a received transaction")
                 #refresh() experimentally disabled
         else:
-            app_log.info("Client: Invalid signature")
+            app_log.warning("Client: Invalid signature")
         #enter transaction end
         refresh()
 
 def app_quit():
-    app_log.info("Received quit command")
+    app_log.warning("Received quit command")
     root.destroy()
 
 def qr():
@@ -401,14 +408,14 @@ def table():
     conn.close()
     # data
 
-    app_log.info(datasheet)
-    app_log.info(len(datasheet))
+    app_log.warning(datasheet)
+    app_log.warning(len(datasheet))
 
     if len(datasheet) == 5:
-        app_log.info("Looks like a new address")
+        app_log.warning("Looks like a new address")
 
     elif len(datasheet) < 20 * 5:
-        app_log.info(len(datasheet))
+        app_log.warning(len(datasheet))
         table_limit = len(datasheet) / 5
     else:
         table_limit = 20
@@ -481,12 +488,12 @@ def refresh():
     if credit == None:
         credit = 0
     balance = credit - debit - fees + rewards - debit_mempool
-    app_log.info("Node: Transction address balance: {}".format(balance))
+    app_log.warning("Node: Transction address balance: {}".format(balance))
 
     # calculate fee - identical to that in node
     c.execute("SELECT * FROM transactions WHERE reward != 0 ORDER BY block_height DESC LIMIT 1;") #or it takes the first
     result = c.fetchall()
-    db_timestamp_last = result[0][1]
+    db_timestamp_last = float(result[0][1])
     #print db_timestamp_last
     db_block_height = result[0][0]
 
@@ -501,11 +508,11 @@ def refresh():
             openfield_input = str(openfield.get("1.0",END)).strip()
 
         fee = '%.8f' % float(abs(100 / (float(db_timestamp_last) - float(timestamp_avg))) + len(openfield_input) / 600 + int(keep_var.get()))
-        app_log.info("Fee: {}".format(fee))
+        app_log.warning("Fee: {}".format(fee))
 
     except Exception as e:
         fee = 1  # presumably there are less than 50 txs
-        app_log.info("Fee error: {}".format(e))
+        app_log.warning("Fee error: {}".format(e))
     # calculate fee
 
     # calculate difficulty
@@ -513,19 +520,35 @@ def refresh():
     #print timestamp_difference
 
     try:
-        diff = (math.log(1e18/timestamp_difference))
-        if db_block_height > 60000:
-            diff = (math.log(1e20 / timestamp_difference))
+        diff = (math.log(1e20 / timestamp_difference))
     except:
         pass
     finally:
         if db_block_height < 50:
-            diff = 33
+            diff = 37
         #if diff < 4:
         #    diff = 4
 
         #print("Calculated difficulty: " + str(diff))
         # calculate difficulty
+
+    # retarget
+
+    c.execute("SELECT block_height FROM transactions WHERE CAST(timestamp AS INTEGER) > ? AND reward != 0",(db_timestamp_last - 600,)) #600=10 min
+
+    blocks_per_minute = len(c.fetchall())/10 #/10=1 min
+
+    if blocks_per_minute > 1:  # if more blocks than 1 per minute
+        diff = diff + blocks_per_minute
+
+    # drop diff per minute if over target
+    time_drop = time.time()
+    if time_drop > db_timestamp_last + 180: #start dropping after 3 minutes
+        diff = diff - (time_drop - db_timestamp_last) / 60 #drop 1 diff per minute
+    # drop diff per minute if over target
+    if diff < 35:
+        diff = 35
+    # retarget
 
     diff_msg = diff
 
@@ -544,7 +567,7 @@ def refresh():
     #aliases
     c.execute("SELECT openfield FROM transactions WHERE address = ? AND openfield LIKE ?;",(address,)+("alias="+'%',))
     aliases = c.fetchall()
-    app_log.info("Aliases: "+str(aliases))
+    app_log.warning("Aliases: "+str(aliases))
     #aliases
 
     fees_current_var.set("Current Fee: {}".format('%.8f' % float(fee)))
@@ -633,7 +656,7 @@ sign_b = Button(f5, text="Sign Message", command=sign, height=1, width=10)
 sign_b.grid(row=12, column=0, sticky=W+E+S, pady=2,padx=15)
 
 sign_b = Button(f5, text="Alias Registration", command=alias, height=1, width=10)
-sign_b.grid(row=12, column=0, sticky=W+E+S, pady=2,padx=15)
+sign_b.grid(row=13, column=0, sticky=W+E+S, pady=2,padx=15)
 
 quit_b = Button(f5, text="Quit", command=app_quit, height=1, width=10)
 quit_b.grid(row=14, column=0, sticky=W+E+S, pady=0,padx=15)
